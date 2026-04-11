@@ -8,7 +8,9 @@ import picocli.CommandLine.Parameters;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +23,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
 /**
  * CLI tool that installs skills deployed with the skills-jar-maven-plugin.
@@ -39,10 +48,13 @@ public class InstallSkillCommand implements Callable<Integer> {
     private static final String PLUGIN_ARTIFACT_ID = "skills-jar-plugin";
     private static final String PLUGIN_VERSION = "0.1.1";
     private static final String DEFAULT_VERSION = "RELEASE";
+    private static final String DEFAULT_REGISTRY_URL =
+            "https://raw.githubusercontent.com/webliteca/skills-registry/main/skills.xml";
 
     @Parameters(index = "0",
-            description = "Skill coordinates: groupId:artifactId[:version]. Version defaults to RELEASE (latest release).",
-            paramLabel = "<groupId:artifactId[:version]>")
+            description = "Skill name or Maven coordinates (groupId:artifactId[:version]). "
+                    + "If no ':' is present, the skill is looked up by name in the skills registry.",
+            paramLabel = "<skill>")
     private String coordinates;
 
     @Option(names = {"-r"},
@@ -79,17 +91,40 @@ public class InstallSkillCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        // 1. Parse coordinates
-        String[] parts = coordinates.split(":", -1);
-        if (parts.length < 2 || parts.length > 3) {
-            System.err.println("Error: Invalid coordinates format. Expected: groupId:artifactId[:version]");
-            return 1;
-        }
+        // 1. Parse coordinates — either Maven format or skill name from registry
+        String groupId;
+        String artifactId;
+        String version;
 
-        String groupId = parts[0].trim();
-        String artifactId = parts[1].trim();
-        String version = (parts.length == 3 && !parts[2].trim().isEmpty())
-                ? parts[2].trim() : DEFAULT_VERSION;
+        if (coordinates.contains(":")) {
+            // Maven coordinates: groupId:artifactId[:version]
+            String[] parts = coordinates.split(":", -1);
+            if (parts.length < 2 || parts.length > 3) {
+                System.err.println("Error: Invalid coordinates format. Expected: groupId:artifactId[:version]");
+                return 1;
+            }
+            groupId = parts[0].trim();
+            artifactId = parts[1].trim();
+            version = (parts.length == 3 && !parts[2].trim().isEmpty())
+                    ? parts[2].trim() : DEFAULT_VERSION;
+        } else {
+            // Skill name — look up in registry
+            String skillName = coordinates.trim();
+            if (skillName.isEmpty()) {
+                System.err.println("Error: Skill name must not be empty.");
+                return 1;
+            }
+            System.out.println("Looking up skill '" + skillName + "' in registry...");
+            String[] resolved = resolveFromRegistry(skillName);
+            if (resolved == null) {
+                System.err.println("Error: Skill '" + skillName + "' not found in the skills registry.");
+                return 1;
+            }
+            groupId = resolved[0];
+            artifactId = resolved[1];
+            version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+            System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
+        }
 
         if (groupId.isEmpty() || artifactId.isEmpty()) {
             System.err.println("Error: groupId and artifactId must not be empty.");
@@ -151,6 +186,49 @@ public class InstallSkillCommand implements Callable<Integer> {
             // Clean up temp directory
             deleteDirectory(tempDir);
         }
+    }
+
+    /**
+     * Resolves a skill name to Maven coordinates via the skills registry.
+     *
+     * @param skillName the skill name to look up
+     * @return array of [groupId, artifactId, version] or null if not found;
+     *         version may be null if omitted in the registry
+     */
+    String[] resolveFromRegistry(String skillName) {
+        String registryUrl = System.getProperty("skills.registry.url", DEFAULT_REGISTRY_URL);
+        try {
+            URL url = new URL(registryUrl);
+            try (InputStream is = url.openStream()) {
+                DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+                DocumentBuilder builder = factory.newDocumentBuilder();
+                Document doc = builder.parse(is);
+
+                NodeList skills = doc.getElementsByTagName("skill");
+                for (int i = 0; i < skills.getLength(); i++) {
+                    Element skill = (Element) skills.item(i);
+                    String name = getElementText(skill, "name");
+                    if (skillName.equals(name)) {
+                        String gid = getElementText(skill, "groupId");
+                        String aid = getElementText(skill, "artifactId");
+                        String ver = getElementText(skill, "version");
+                        return new String[]{gid, aid, ver};
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Warning: Failed to query skills registry: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static String getElementText(Element parent, String tagName) {
+        NodeList nodes = parent.getElementsByTagName(tagName);
+        if (nodes.getLength() > 0) {
+            String text = nodes.item(0).getTextContent();
+            return text != null ? text.trim() : null;
+        }
+        return null;
     }
 
     /**
