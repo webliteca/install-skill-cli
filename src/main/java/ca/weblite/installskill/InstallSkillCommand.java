@@ -50,10 +50,13 @@ public class InstallSkillCommand implements Callable<Integer> {
             paramLabel = "<repository>")
     private String repository;
 
+    @Option(names = {"-g", "--global"},
+            description = "Install globally to ~/.claude/skills (default is local: ./.claude/skills).")
+    private boolean global;
+
     @Option(names = {"-d"},
-            description = "Skills installation directory (default: ./claude/skills).",
-            paramLabel = "<skillsDir>",
-            defaultValue = "./claude/skills")
+            description = "Skills installation directory (overrides --global).",
+            paramLabel = "<skillsDir>")
     private String skillsDir;
 
     public static void main(String[] args) {
@@ -129,7 +132,10 @@ public class InstallSkillCommand implements Callable<Integer> {
 
             // 8. Copy installed skills to target directory
             Path installedSkillsDir = tempDir.resolve(".claude").resolve("skills");
-            Path targetDir = Paths.get(skillsDir).toAbsolutePath().normalize();
+            String resolvedDir = skillsDir != null ? skillsDir
+                    : global ? Paths.get(System.getProperty("user.home"), ".claude", "skills").toString()
+                    : ".claude/skills";
+            Path targetDir = Paths.get(resolvedDir).toAbsolutePath().normalize();
 
             if (!Files.exists(installedSkillsDir) || isDirectoryEmpty(installedSkillsDir)) {
                 System.err.println("Error: No skills were found after installation.");
