@@ -38,7 +38,7 @@ public class InstallSkillCommand implements Callable<Integer> {
 
     private static final String PLUGIN_GROUP_ID = "ca.weblite";
     private static final String PLUGIN_ARTIFACT_ID = "skills-jar-plugin";
-    private static final String PLUGIN_VERSION = "0.1.2";
+    private static final String PLUGIN_VERSION = "0.1.1";
     private static final String DEFAULT_VERSION = "RELEASE";
 
     @Parameters(index = "0",
@@ -221,6 +221,7 @@ public class InstallSkillCommand implements Callable<Integer> {
         pom.append("            <groupId>").append(escapeXml(groupId)).append("</groupId>\n");
         pom.append("            <artifactId>").append(escapeXml(artifactId)).append("</artifactId>\n");
         pom.append("            <version>").append(escapeXml(version)).append("</version>\n");
+        pom.append("            <type>pom</type>\n");
         pom.append("        </dependency>\n");
         pom.append("    </dependencies>\n\n");
 
