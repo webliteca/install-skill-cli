@@ -1,0 +1,65 @@
+name: jDeploy CI
+
+on:
+   push:
+      branches:
+         - '*-snapshot'
+      tags:
+         - 'v*'
+
+concurrency:
+   group: jdeploy-release-${{ github.repository }}
+   cancel-in-progress: false
+
+jobs:
+   build:
+      permissions:
+         contents: write
+      runs-on: ubuntu-latest
+
+      steps:
+         - uses: actions/checkout@v3
+         - name: Set up JDK
+           uses: actions/setup-java@v3
+           with:
+              java-version: '11'
+              distribution: 'temurin'
+         - name: Build with Maven
+           run: mvn clean package -DskipTests
+         - name: Build App Installer Bundles
+           uses: shannah/jdeploy@master
+           with:
+              github_token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Upload Build Artifacts for DMG Action
+           if: ${{ vars.JDEPLOY_CREATE_DMG == 'true' }}
+           uses: actions/upload-artifact@v4
+           with:
+              name: build-target
+              path: ./target
+
+   create_and_upload_dmg:
+      if: ${{ vars.JDEPLOY_CREATE_DMG == 'true' }}
+      name: Create and upload DMG
+      permissions:
+         contents: write
+      runs-on: macos-latest
+      needs: build
+      steps:
+         - name: Set up Git
+           run: |
+              git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+              git config --global user.name "${{ github.actor }}"
+         - uses: actions/checkout@v3
+         - name: Download Build Artifacts
+           uses: actions/download-artifact@v4
+           with:
+              name: build-target
+              path: ./target
+         - name: Create DMG and Upload to Release
+           uses: shannah/jdeploy-action-dmg@main
+           with:
+              github_token: ${{ secrets.GITHUB_TOKEN }}
+              developer_id: ${{ secrets.MAC_DEVELOPER_ID }}
+              developer_certificate_p12_base64: ${{ secrets.MAC_DEVELOPER_CERTIFICATE_P12_BASE64 }}
+              developer_certificate_password: ${{ secrets.MAC_DEVELOPER_CERTIFICATE_PASSWORD }}
+              notarization_password: ${{ secrets.MAC_NOTARIZATION_PASSWORD }}

@@ -58,6 +58,19 @@ public class InstallSkillCommand implements Callable<Integer> {
     private String skillsDir;
 
     public static void main(String[] args) {
+        String mode = System.getProperty("jdeploy.mode", "gui");
+        if ("gui".equals(mode)) {
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                javax.swing.JOptionPane.showMessageDialog(
+                    null,
+                    "Install Skill CLI v1.0.0\n\nThis is a command-line tool.\nRun 'install-skill' in a terminal for usage.",
+                    "About Install Skill CLI",
+                    javax.swing.JOptionPane.INFORMATION_MESSAGE
+                );
+                System.exit(0);
+            });
+            return;
+        }
         int exitCode = new CommandLine(new InstallSkillCommand()).execute(args);
         System.exit(exitCode);
     }

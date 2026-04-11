@@ -1,0 +1,32 @@
+{
+  "name": "install-skill-cli",
+  "version": "1.0.0",
+  "description": "CLI tool for installing skills deployed with the skills-jar-maven-plugin",
+  "bin": {
+    "install-skill": "jdeploy-bundle/jdeploy.js"
+  },
+  "preferGlobal": true,
+  "jdeploy": {
+    "jdk": false,
+    "javaVersion": "11",
+    "javafx": false,
+    "jar": "target/install-skill-cli-1.0.0-SNAPSHOT.jar",
+    "title": "Install Skill CLI",
+    "commands": {
+      "install-skill": {
+        "description": "Install skills deployed with the skills-jar-maven-plugin"
+      }
+    }
+  },
+  "dependencies": {
+    "command-exists-promise": "^2.0.2",
+    "node-fetch": "2.6.7",
+    "tar": "^4.4.8",
+    "yauzl": "^2.10.0",
+    "shelljs": "^0.8.4"
+  },
+  "files": [
+    "jdeploy-bundle"
+  ],
+  "license": "ISC"
+}

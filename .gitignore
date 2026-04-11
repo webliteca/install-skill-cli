@@ -7,3 +7,6 @@ target/
 .settings/
 .project
 .classpath
+jdeploy-bundle/
+jdeploy/
+node_modules/
