@@ -58,7 +58,7 @@ public class InstallSkillCommand implements Callable<Integer> {
     private String skillsDir;
 
     public static void main(String[] args) {
-        String mode = System.getProperty("jdeploy.mode", "gui");
+        String mode = System.getProperty("jdeploy.mode", null);
         if ("gui".equals(mode)) {
             javax.swing.SwingUtilities.invokeLater(() -> {
                 javax.swing.JOptionPane.showMessageDialog(
