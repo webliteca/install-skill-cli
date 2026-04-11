@@ -191,4 +191,74 @@ class InstallSkillIT {
         assertTrue(Files.isRegularFile(skillMd),
                 "SKILL.md should exist when using default version");
     }
+
+    @Test
+    void installSkillByRegistryName() throws IOException {
+        // Create a temporary registry XML with the test skill
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<skills>\n" +
+                    "  <skill>\n" +
+                    "    <name>teavm-lambda</name>\n" +
+                    "    <groupId>" + TEAVM_LAMBDA_GROUP + "</groupId>\n" +
+                    "    <artifactId>" + TEAVM_LAMBDA_ARTIFACT + "</artifactId>\n" +
+                    "    <version>" + TEAVM_LAMBDA_VERSION + "</version>\n" +
+                    "    <description>Test skill</description>\n" +
+                    "  </skill>\n" +
+                    "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            // Point the registry URL to the local file
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "teavm-lambda",
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(0, exitCode, "install-skill by name should exit successfully");
+
+                Path skillDir = skillsDir.resolve(TEAVM_LAMBDA_ARTIFACT);
+                assertTrue(Files.isDirectory(skillDir),
+                        "Skill directory should exist when installed by name");
+
+                Path skillMd = skillDir.resolve("SKILL.md");
+                assertTrue(Files.isRegularFile(skillMd),
+                        "SKILL.md should exist when installed by name");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installSkillByRegistryNameNotFound() throws IOException {
+        // Create a temporary registry XML without the requested skill
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<skills>\n" +
+                    "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "nonexistent-skill",
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(1, exitCode, "install-skill should fail for unknown skill name");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
 }
