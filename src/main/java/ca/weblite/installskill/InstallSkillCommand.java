@@ -8,8 +8,11 @@ import picocli.CommandLine.Parameters;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +25,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * CLI tool that installs skills deployed with the skills-jar-maven-plugin.
@@ -40,6 +45,10 @@ public class InstallSkillCommand implements Callable<Integer> {
     private static final String PLUGIN_ARTIFACT_ID = "skills-jar-plugin";
     private static final String PLUGIN_VERSION = "0.1.1";
     private static final String DEFAULT_VERSION = "RELEASE";
+    private static final String MAVEN_VERSION = "3.9.9";
+    private static final String MAVEN_DOWNLOAD_URL =
+            "https://dlcdn.apache.org/maven/maven-3/" + MAVEN_VERSION
+                    + "/binaries/apache-maven-" + MAVEN_VERSION + "-bin.zip";
 
     @Parameters(index = "0",
             description = "Skill coordinates: groupId:artifactId[:version]. Version defaults to RELEASE (latest release).",
@@ -105,10 +114,10 @@ public class InstallSkillCommand implements Callable<Integer> {
             repoPass = repoParts[2];
         }
 
-        // 3. Verify Maven is available
+        // 3. Ensure Maven is available (downloads if not on PATH)
         String mvnCommand = findMavenCommand();
         if (mvnCommand == null) {
-            System.err.println("Error: Maven (mvn) is not available on the PATH. Please install Maven first.");
+            System.err.println("Error: Failed to locate or download Maven.");
             return 1;
         }
 
@@ -181,34 +190,96 @@ public class InstallSkillCommand implements Callable<Integer> {
     }
 
     /**
-     * Finds the Maven command (mvn) on the system PATH.
+     * Finds Maven on the system PATH, or downloads and caches it if not found.
      */
     private String findMavenCommand() {
-        // Try mvn directly
-        try {
-            Process p = new ProcessBuilder("mvn", "--version")
-                    .redirectErrorStream(true)
-                    .start();
-            p.getInputStream().readAllBytes();
-            if (p.waitFor() == 0) {
-                return "mvn";
-            }
-        } catch (Exception ignored) {
+        // Try system mvn
+        if (tryCommand("mvn")) return "mvn";
+        if (tryCommand("mvn.cmd")) return "mvn.cmd";
+
+        // Try cached Maven
+        Path cachedMvn = getCachedMavenBin("mvn");
+        if (Files.isExecutable(cachedMvn)) {
+            return cachedMvn.toString();
+        }
+        // Windows
+        Path cachedMvnCmd = getCachedMavenBin("mvn.cmd");
+        if (Files.exists(cachedMvnCmd)) {
+            return cachedMvnCmd.toString();
         }
 
-        // Try mvn.cmd for Windows
+        // Download and cache Maven
         try {
-            Process p = new ProcessBuilder("mvn.cmd", "--version")
-                    .redirectErrorStream(true)
-                    .start();
-            p.getInputStream().readAllBytes();
-            if (p.waitFor() == 0) {
-                return "mvn.cmd";
+            downloadMaven();
+            if (Files.exists(cachedMvn)) {
+                cachedMvn.toFile().setExecutable(true);
+                return cachedMvn.toString();
             }
-        } catch (Exception ignored) {
+            if (Files.exists(cachedMvnCmd)) {
+                return cachedMvnCmd.toString();
+            }
+        } catch (IOException e) {
+            System.err.println("Error: Failed to download Maven: " + e.getMessage());
         }
 
         return null;
+    }
+
+    private boolean tryCommand(String command) {
+        try {
+            Process p = new ProcessBuilder(command, "--version")
+                    .redirectErrorStream(true)
+                    .start();
+            p.getInputStream().readAllBytes();
+            return p.waitFor() == 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private Path getCachedMavenBin(String executable) {
+        return Paths.get(System.getProperty("user.home"), ".install-skill-cli",
+                "apache-maven-" + MAVEN_VERSION, "bin", executable);
+    }
+
+    private void downloadMaven() throws IOException {
+        Path cacheDir = Paths.get(System.getProperty("user.home"), ".install-skill-cli");
+        Files.createDirectories(cacheDir);
+
+        System.out.println("Downloading Apache Maven " + MAVEN_VERSION + "...");
+        URL url = new URL(MAVEN_DOWNLOAD_URL);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setInstanceFollowRedirects(true);
+
+        try (InputStream in = conn.getInputStream();
+             ZipInputStream zis = new ZipInputStream(in)) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                Path target = cacheDir.resolve(entry.getName()).normalize();
+                // Zip slip protection
+                if (!target.startsWith(cacheDir)) {
+                    throw new IOException("Bad zip entry: " + entry.getName());
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(zis, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        } finally {
+            conn.disconnect();
+        }
+
+        // Set execute permissions on bin scripts
+        Path binDir = cacheDir.resolve("apache-maven-" + MAVEN_VERSION).resolve("bin");
+        if (Files.isDirectory(binDir)) {
+            try (Stream<Path> files = Files.list(binDir)) {
+                files.forEach(f -> f.toFile().setExecutable(true));
+            }
+        }
+
+        System.out.println("Maven " + MAVEN_VERSION + " installed to " + cacheDir);
     }
 
     /**
