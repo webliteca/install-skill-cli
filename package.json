@@ -1,6 +1,6 @@
 {
   "name": "install-skill-cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI tool for installing skills deployed with the skills-jar-maven-plugin",
   "bin": {
     "install-skill": "jdeploy-bundle/jdeploy.js"
