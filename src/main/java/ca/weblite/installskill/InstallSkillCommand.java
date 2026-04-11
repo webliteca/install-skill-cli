@@ -1,18 +1,14 @@
 package ca.weblite.installskill;
 
+import org.apache.maven.cli.MavenCli;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,8 +21,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * CLI tool that installs skills deployed with the skills-jar-maven-plugin.
@@ -45,10 +39,6 @@ public class InstallSkillCommand implements Callable<Integer> {
     private static final String PLUGIN_ARTIFACT_ID = "skills-jar-plugin";
     private static final String PLUGIN_VERSION = "0.1.1";
     private static final String DEFAULT_VERSION = "RELEASE";
-    private static final String MAVEN_VERSION = "3.9.9";
-    private static final String MAVEN_DOWNLOAD_URL =
-            "https://dlcdn.apache.org/maven/maven-3/" + MAVEN_VERSION
-                    + "/binaries/apache-maven-" + MAVEN_VERSION + "-bin.zip";
 
     @Parameters(index = "0",
             description = "Skill coordinates: groupId:artifactId[:version]. Version defaults to RELEASE (latest release).",
@@ -114,31 +104,24 @@ public class InstallSkillCommand implements Callable<Integer> {
             repoPass = repoParts[2];
         }
 
-        // 3. Ensure Maven is available (downloads if not on PATH)
-        String mvnCommand = findMavenCommand();
-        if (mvnCommand == null) {
-            System.err.println("Error: Failed to locate or download Maven.");
-            return 1;
-        }
-
-        // 4. Create temp directory
+        // 3. Create temp directory
         Path tempDir = Files.createTempDirectory("install-skill-");
         System.out.println("Setting up temporary Maven project...");
 
         try {
-            // 5. Generate pom.xml in the temp project
+            // 4. Generate pom.xml in the temp project
             generatePom(tempDir, groupId, artifactId, version, repoUrl);
 
-            // 6. Generate settings.xml if credentials are provided
+            // 5. Generate settings.xml if credentials are provided
             boolean hasSettings = false;
             if (repoUser != null) {
                 generateSettings(tempDir, repoUser, repoPass);
                 hasSettings = true;
             }
 
-            // 7. Run Maven to install skills
+            // 6. Run embedded Maven to install skills
             System.out.println("Resolving skill " + groupId + ":" + artifactId + ":" + version + "...");
-            int exitCode = runMaven(mvnCommand, tempDir, hasSettings);
+            int exitCode = runMaven(tempDir, hasSettings);
             if (exitCode != 0) {
                 System.err.println("Error: Maven execution failed (exit code " + exitCode + ").");
                 return exitCode;
@@ -190,96 +173,23 @@ public class InstallSkillCommand implements Callable<Integer> {
     }
 
     /**
-     * Finds Maven on the system PATH, or downloads and caches it if not found.
+     * Runs the Maven skills-jar:install goal using the embedded Maven runtime.
      */
-    private String findMavenCommand() {
-        // Try system mvn
-        if (tryCommand("mvn")) return "mvn";
-        if (tryCommand("mvn.cmd")) return "mvn.cmd";
+    private int runMaven(Path projectDir, boolean hasSettings) {
+        System.setProperty("maven.multiModuleProjectDirectory", projectDir.toString());
 
-        // Try cached Maven
-        Path cachedMvn = getCachedMavenBin("mvn");
-        if (Files.isExecutable(cachedMvn)) {
-            return cachedMvn.toString();
+        List<String> args = new ArrayList<>();
+        args.add("-B");
+        if (hasSettings) {
+            args.add("-s");
+            args.add(projectDir.resolve("settings.xml").toString());
         }
-        // Windows
-        Path cachedMvnCmd = getCachedMavenBin("mvn.cmd");
-        if (Files.exists(cachedMvnCmd)) {
-            return cachedMvnCmd.toString();
-        }
+        args.add(PLUGIN_GROUP_ID + ":" + PLUGIN_ARTIFACT_ID + ":"
+                + PLUGIN_VERSION + ":install");
 
-        // Download and cache Maven
-        try {
-            downloadMaven();
-            if (Files.exists(cachedMvn)) {
-                cachedMvn.toFile().setExecutable(true);
-                return cachedMvn.toString();
-            }
-            if (Files.exists(cachedMvnCmd)) {
-                return cachedMvnCmd.toString();
-            }
-        } catch (IOException e) {
-            System.err.println("Error: Failed to download Maven: " + e.getMessage());
-        }
-
-        return null;
-    }
-
-    private boolean tryCommand(String command) {
-        try {
-            Process p = new ProcessBuilder(command, "--version")
-                    .redirectErrorStream(true)
-                    .start();
-            p.getInputStream().readAllBytes();
-            return p.waitFor() == 0;
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private Path getCachedMavenBin(String executable) {
-        return Paths.get(System.getProperty("user.home"), ".install-skill-cli",
-                "apache-maven-" + MAVEN_VERSION, "bin", executable);
-    }
-
-    private void downloadMaven() throws IOException {
-        Path cacheDir = Paths.get(System.getProperty("user.home"), ".install-skill-cli");
-        Files.createDirectories(cacheDir);
-
-        System.out.println("Downloading Apache Maven " + MAVEN_VERSION + "...");
-        URL url = new URL(MAVEN_DOWNLOAD_URL);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setInstanceFollowRedirects(true);
-
-        try (InputStream in = conn.getInputStream();
-             ZipInputStream zis = new ZipInputStream(in)) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                Path target = cacheDir.resolve(entry.getName()).normalize();
-                // Zip slip protection
-                if (!target.startsWith(cacheDir)) {
-                    throw new IOException("Bad zip entry: " + entry.getName());
-                }
-                if (entry.isDirectory()) {
-                    Files.createDirectories(target);
-                } else {
-                    Files.createDirectories(target.getParent());
-                    Files.copy(zis, target, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        } finally {
-            conn.disconnect();
-        }
-
-        // Set execute permissions on bin scripts
-        Path binDir = cacheDir.resolve("apache-maven-" + MAVEN_VERSION).resolve("bin");
-        if (Files.isDirectory(binDir)) {
-            try (Stream<Path> files = Files.list(binDir)) {
-                files.forEach(f -> f.toFile().setExecutable(true));
-            }
-        }
-
-        System.out.println("Maven " + MAVEN_VERSION + " installed to " + cacheDir);
+        MavenCli cli = new MavenCli();
+        return cli.doMain(args.toArray(new String[0]),
+                projectDir.toString(), System.out, System.err);
     }
 
     /**
@@ -374,41 +284,6 @@ public class InstallSkillCommand implements Callable<Integer> {
         settings.append("</settings>\n");
 
         Files.writeString(projectDir.resolve("settings.xml"), settings.toString());
-    }
-
-    /**
-     * Runs the Maven skills-jar:install goal in the temporary project directory.
-     */
-    private int runMaven(String mvnCommand, Path projectDir, boolean hasSettings)
-            throws IOException, InterruptedException {
-        List<String> command = new ArrayList<>();
-        command.add(mvnCommand);
-        command.add("-B"); // batch mode
-
-        if (hasSettings) {
-            command.add("-s");
-            command.add(projectDir.resolve("settings.xml").toString());
-        }
-
-        command.add(PLUGIN_GROUP_ID + ":" + PLUGIN_ARTIFACT_ID + ":"
-                + PLUGIN_VERSION + ":install");
-
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(projectDir.toFile());
-        pb.redirectErrorStream(true);
-
-        Process process = pb.start();
-
-        // Stream Maven output to stdout
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                System.out.println(line);
-            }
-        }
-
-        return process.waitFor();
     }
 
     /**
