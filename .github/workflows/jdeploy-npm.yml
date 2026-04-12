@@ -25,23 +25,10 @@ jobs:
            with:
               java-version: '11'
               distribution: 'temurin'
-         - name: Set up Node
-           uses: actions/setup-node@v4
-           with:
-              node-version: '20.x'
-              registry-url: 'https://registry.npmjs.org'
-         - name: Upgrade npm for trusted publishing
-           run: npm install -g npm@latest
          - name: Build with Maven
            run: mvn clean package -DskipTests
          - name: Publish to npm
-           shell: bash
-           env:
-              NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-           run: |
-              TAG_VERSION=${{ github.ref_name }}
-              if [[ ${TAG_VERSION} = v* ]]; then
-                TAG_VERSION=${TAG_VERSION:1}
-              fi
-              npm pkg set version="$TAG_VERSION"
-              npx jdeploy@6.1.1 publish
+           uses: shannah/jdeploy@claude/update-node-npm-oidc-c8y3e
+           with:
+              deploy_target: npm
+              npm_token: ${{ secrets.NPM_TOKEN }}
