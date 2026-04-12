@@ -28,5 +28,9 @@
   "files": [
     "jdeploy-bundle"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/webliteca/install-skill-cli"
+  },
   "license": "ISC"
 }
