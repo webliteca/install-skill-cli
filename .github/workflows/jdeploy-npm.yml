@@ -14,7 +14,7 @@ concurrency:
 jobs:
    publish:
       permissions:
-         contents: write
+         contents: read
          id-token: write
       runs-on: ubuntu-latest
 
@@ -25,16 +25,10 @@ jobs:
            with:
               java-version: '11'
               distribution: 'temurin'
-         - name: Set up Node
-           uses: actions/setup-node@v4
-           with:
-              node-version: '20.x'
-         - name: Upgrade npm for trusted publishing
-           run: npm install -g npm@latest
          - name: Build with Maven
            run: mvn clean package -DskipTests
          - name: Publish to npm
-           uses: shannah/jdeploy@master
+           uses: shannah/jdeploy@claude/update-node-npm-oidc-c8y3e
            with:
               deploy_target: npm
               npm_token: ${{ secrets.NPM_TOKEN }}
