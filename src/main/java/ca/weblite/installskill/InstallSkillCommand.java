@@ -53,7 +53,8 @@ public class InstallSkillCommand implements Callable<Integer> {
 
     @Parameters(index = "0",
             description = "Skill name or Maven coordinates (groupId:artifactId[:version]). "
-                    + "If no ':' is present, the skill is looked up by name in the skills registry.",
+                    + "If no ':' is present, the skill is looked up by name in the skills registry. "
+                    + "Use name@version to override the registry version.",
             paramLabel = "<skill>")
     private String coordinates;
 
@@ -109,7 +110,18 @@ public class InstallSkillCommand implements Callable<Integer> {
                     ? parts[2].trim() : DEFAULT_VERSION;
         } else {
             // Skill name — look up in registry
+            // Support name@version syntax to override registry version
             String skillName = coordinates.trim();
+            String versionOverride = null;
+            int atIdx = skillName.indexOf('@');
+            if (atIdx >= 0) {
+                versionOverride = skillName.substring(atIdx + 1).trim();
+                skillName = skillName.substring(0, atIdx).trim();
+                if (versionOverride.isEmpty()) {
+                    System.err.println("Error: Version must not be empty in name@version format.");
+                    return 1;
+                }
+            }
             if (skillName.isEmpty()) {
                 System.err.println("Error: Skill name must not be empty.");
                 return 1;
@@ -122,7 +134,11 @@ public class InstallSkillCommand implements Callable<Integer> {
             }
             groupId = resolved[0];
             artifactId = resolved[1];
-            version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+            if (versionOverride != null) {
+                version = versionOverride;
+            } else {
+                version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+            }
             System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
         }
 

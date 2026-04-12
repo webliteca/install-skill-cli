@@ -236,6 +236,96 @@ class InstallSkillIT {
     }
 
     @Test
+    void installSkillByRegistryNameWithVersionOverride() throws IOException {
+        // Create a temporary registry XML — the registry version differs from the override
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<skills>\n" +
+                    "  <skill>\n" +
+                    "    <name>teavm-lambda</name>\n" +
+                    "    <groupId>" + TEAVM_LAMBDA_GROUP + "</groupId>\n" +
+                    "    <artifactId>" + TEAVM_LAMBDA_ARTIFACT + "</artifactId>\n" +
+                    "    <version>9.9.9</version>\n" +
+                    "    <description>Test skill</description>\n" +
+                    "  </skill>\n" +
+                    "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            // Point the registry URL to the local file
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                // Use name@version syntax — the version should override the registry's 9.9.9
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "teavm-lambda@" + TEAVM_LAMBDA_VERSION,
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(0, exitCode, "install-skill by name@version should exit successfully");
+
+                Path skillDir = skillsDir.resolve(TEAVM_LAMBDA_ARTIFACT);
+                assertTrue(Files.isDirectory(skillDir),
+                        "Skill directory should exist when installed by name@version");
+
+                Path skillMd = skillDir.resolve("SKILL.md");
+                assertTrue(Files.isRegularFile(skillMd),
+                        "SKILL.md should exist when installed by name@version");
+
+                // Verify the manifest uses the overridden version, not the registry version
+                Path manifest = skillsDir.resolve(".skill-manifest.json");
+                assertTrue(Files.isRegularFile(manifest),
+                        ".skill-manifest.json should exist");
+                String manifestContent = Files.readString(manifest);
+                assertTrue(manifestContent.contains(
+                                TEAVM_LAMBDA_GROUP + ":" + TEAVM_LAMBDA_ARTIFACT + ":" + TEAVM_LAMBDA_VERSION),
+                        "Manifest should contain the overridden version, not the registry version");
+                assertFalse(manifestContent.contains("9.9.9"),
+                        "Manifest should NOT contain the registry version 9.9.9");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installSkillByRegistryNameWithEmptyVersionFails() throws IOException {
+        // Create a temporary registry XML
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<skills>\n" +
+                    "  <skill>\n" +
+                    "    <name>teavm-lambda</name>\n" +
+                    "    <groupId>" + TEAVM_LAMBDA_GROUP + "</groupId>\n" +
+                    "    <artifactId>" + TEAVM_LAMBDA_ARTIFACT + "</artifactId>\n" +
+                    "    <version>" + TEAVM_LAMBDA_VERSION + "</version>\n" +
+                    "    <description>Test skill</description>\n" +
+                    "  </skill>\n" +
+                    "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                // name@ with empty version should fail
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "teavm-lambda@",
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(1, exitCode, "install-skill with empty version after @ should fail");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
     void installSkillByRegistryNameNotFound() throws IOException {
         // Create a temporary registry XML without the requested skill
         Path registryFile = Files.createTempFile("skills-registry-", ".xml");
