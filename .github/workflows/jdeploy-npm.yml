@@ -28,7 +28,7 @@ jobs:
          - name: Build with Maven
            run: mvn clean package -DskipTests
          - name: Publish to npm
-           uses: shannah/jdeploy@claude/update-node-npm-oidc-c8y3e
+           uses: shannah/jdeploy@master
            with:
               deploy_target: npm
               npm_token: ${{ secrets.NPM_TOKEN }}
