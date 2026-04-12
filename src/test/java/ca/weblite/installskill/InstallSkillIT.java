@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
@@ -350,5 +351,217 @@ class InstallSkillIT {
         } finally {
             Files.deleteIfExists(registryFile);
         }
+    }
+
+    // ---- .skills-versions batch install tests ----
+
+    private Path createRegistryFile() throws IOException {
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        String registryXml =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                "<skills>\n" +
+                "  <skill>\n" +
+                "    <name>teavm-lambda</name>\n" +
+                "    <groupId>" + TEAVM_LAMBDA_GROUP + "</groupId>\n" +
+                "    <artifactId>" + TEAVM_LAMBDA_ARTIFACT + "</artifactId>\n" +
+                "    <version>" + TEAVM_LAMBDA_VERSION + "</version>\n" +
+                "    <description>Test skill</description>\n" +
+                "  </skill>\n" +
+                "</skills>\n";
+        Files.writeString(registryFile, registryXml);
+        return registryFile;
+    }
+
+    private InstallSkillCommand createCommandWithWorkingDir(Path workDir) {
+        InstallSkillCommand cmd = new InstallSkillCommand();
+        cmd.workingDirectory = workDir;
+        return cmd;
+    }
+
+    @Test
+    void installFromVersionsFile() throws IOException {
+        // Create .skills-versions file in skillsDir (acting as working dir)
+        Path versionsFile = skillsDir.resolve(".skills-versions");
+        Files.writeString(versionsFile,
+                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+
+        Path registryFile = createRegistryFile();
+        try {
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                // Create a subdirectory for installed skills output
+                Path installTarget = skillsDir.resolve("output");
+                Files.createDirectories(installTarget);
+
+                InstallSkillCommand cmd = createCommandWithWorkingDir(skillsDir);
+                int exitCode = new CommandLine(cmd).execute(
+                        "-d", installTarget.toString()
+                );
+
+                assertEquals(0, exitCode, "install from .skills-versions should exit successfully");
+
+                // Verify the skill was installed
+                Path skillDir = installTarget.resolve(TEAVM_LAMBDA_ARTIFACT);
+                assertTrue(Files.isDirectory(skillDir),
+                        "Skill directory should exist after batch install");
+
+                Path skillMd = skillDir.resolve("SKILL.md");
+                assertTrue(Files.isRegularFile(skillMd),
+                        "SKILL.md should exist after batch install");
+
+                // Verify lock file was created
+                Path lockFile = skillsDir.resolve(".skills-versions.lock");
+                assertTrue(Files.isRegularFile(lockFile),
+                        ".skills-versions.lock should be created after batch install");
+
+                String lockContent = Files.readString(lockFile);
+                assertTrue(lockContent.contains("\"teavm-lambda\""),
+                        "Lock file should contain the skill name");
+                assertTrue(lockContent.contains(TEAVM_LAMBDA_GROUP),
+                        "Lock file should contain the groupId");
+                assertTrue(lockContent.contains(TEAVM_LAMBDA_ARTIFACT),
+                        "Lock file should contain the artifactId");
+                assertTrue(lockContent.contains(TEAVM_LAMBDA_VERSION),
+                        "Lock file should contain the resolved version");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installFromVersionsFileLockReuse() throws IOException {
+        // Create .skills-versions file
+        Path versionsFile = skillsDir.resolve(".skills-versions");
+        Files.writeString(versionsFile,
+                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+
+        Path registryFile = createRegistryFile();
+        try {
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                Path installTarget = skillsDir.resolve("output");
+                Files.createDirectories(installTarget);
+
+                // First install — creates lock file
+                InstallSkillCommand cmd1 = createCommandWithWorkingDir(skillsDir);
+                int exitCode1 = new CommandLine(cmd1).execute(
+                        "-d", installTarget.toString()
+                );
+                assertEquals(0, exitCode1, "First install should succeed");
+
+                Path lockFile = skillsDir.resolve(".skills-versions.lock");
+                assertTrue(Files.isRegularFile(lockFile),
+                        "Lock file should exist after first install");
+
+                // Read lock file and verify it can be parsed
+                Map<String, SkillLockFile.LockedSkill> locked = SkillLockFile.read(lockFile);
+                assertEquals(1, locked.size(), "Lock file should have 1 entry");
+                assertTrue(locked.containsKey("teavm-lambda"),
+                        "Lock file should contain teavm-lambda");
+
+                // Second install — should reuse locked versions
+                InstallSkillCommand cmd2 = createCommandWithWorkingDir(skillsDir);
+                int exitCode2 = new CommandLine(cmd2).execute(
+                        "-d", installTarget.toString()
+                );
+                assertEquals(0, exitCode2, "Second install (from lock) should succeed");
+
+                // Lock file should still exist and be unchanged
+                Map<String, SkillLockFile.LockedSkill> lockedAfter = SkillLockFile.read(lockFile);
+                assertEquals(locked.size(), lockedAfter.size(),
+                        "Lock file should have same entries after second install");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installFromVersionsFileWithUpdate() throws IOException {
+        // Create .skills-versions file
+        Path versionsFile = skillsDir.resolve(".skills-versions");
+        Files.writeString(versionsFile,
+                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+
+        Path registryFile = createRegistryFile();
+        try {
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            try {
+                Path installTarget = skillsDir.resolve("output");
+                Files.createDirectories(installTarget);
+
+                // First install — creates lock file
+                InstallSkillCommand cmd1 = createCommandWithWorkingDir(skillsDir);
+                int exitCode1 = new CommandLine(cmd1).execute(
+                        "-d", installTarget.toString()
+                );
+                assertEquals(0, exitCode1, "First install should succeed");
+
+                // Install with --update — should re-resolve even though lock exists
+                InstallSkillCommand cmd2 = createCommandWithWorkingDir(skillsDir);
+                int exitCode2 = new CommandLine(cmd2).execute(
+                        "-u", "-d", installTarget.toString()
+                );
+                assertEquals(0, exitCode2, "Install with --update should succeed");
+
+                // Verify lock file still exists with correct content
+                Path lockFile = skillsDir.resolve(".skills-versions.lock");
+                Map<String, SkillLockFile.LockedSkill> locked = SkillLockFile.read(lockFile);
+                assertEquals(1, locked.size(),
+                        "Lock file should have 1 entry after --update");
+                assertEquals(TEAVM_LAMBDA_VERSION, locked.get("teavm-lambda").getVersion(),
+                        "Version should match after --update");
+            } finally {
+                System.clearProperty("skills.registry.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installWithoutArgAndWithoutVersionsFileFails() {
+        // Use skillsDir as working directory — no .skills-versions present
+        InstallSkillCommand cmd = createCommandWithWorkingDir(skillsDir);
+        int exitCode = new CommandLine(cmd).execute(
+                "-d", skillsDir.toString()
+        );
+
+        assertEquals(1, exitCode,
+                "install-skill with no argument and no .skills-versions should fail");
+    }
+
+    @Test
+    void installFromVersionsFileUsingMavenCoordinates() throws IOException {
+        // Test .skills-versions with Maven coordinates format (groupId:artifactId@version)
+        Path versionsFile = skillsDir.resolve(".skills-versions");
+        Files.writeString(versionsFile,
+                TEAVM_LAMBDA_GROUP + ":" + TEAVM_LAMBDA_ARTIFACT
+                        + "@" + TEAVM_LAMBDA_VERSION + "\n");
+
+        Path installTarget = skillsDir.resolve("output");
+        Files.createDirectories(installTarget);
+
+        InstallSkillCommand cmd = createCommandWithWorkingDir(skillsDir);
+        int exitCode = new CommandLine(cmd).execute(
+                "-d", installTarget.toString()
+        );
+
+        assertEquals(0, exitCode,
+                "install from .skills-versions with Maven coordinates should succeed");
+
+        Path skillDir = installTarget.resolve(TEAVM_LAMBDA_ARTIFACT);
+        assertTrue(Files.isDirectory(skillDir),
+                "Skill directory should exist after batch install with Maven coordinates");
+
+        // Verify lock file
+        Path lockFile = skillsDir.resolve(".skills-versions.lock");
+        assertTrue(Files.isRegularFile(lockFile),
+                ".skills-versions.lock should be created");
     }
 }

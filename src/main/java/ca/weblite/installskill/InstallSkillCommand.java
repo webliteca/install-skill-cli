@@ -6,10 +6,8 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -19,8 +17,11 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.stream.Stream;
 
@@ -37,6 +38,10 @@ import org.w3c.dom.NodeList;
  * <p>Sets up a temporary Maven project with the specified skill artifact as a dependency,
  * runs the skills-jar plugin install goal to resolve and unpack skill bundles,
  * then copies the installed skills to the target directory.</p>
+ *
+ * <p>When invoked with no arguments, reads from a {@code .skills-versions} file in the
+ * current directory and installs all listed skills. A {@code .skills-versions.lock} file
+ * records the resolved versions for reproducible installs.</p>
  */
 @Command(name = "install-skill",
         mixinStandardHelpOptions = true,
@@ -52,7 +57,9 @@ public class InstallSkillCommand implements Callable<Integer> {
             "https://raw.githubusercontent.com/webliteca/skills-registry/main/skills.xml";
 
     @Parameters(index = "0",
+            arity = "0..1",
             description = "Skill name or Maven coordinates (groupId:artifactId[:version]). "
+                    + "If omitted, reads from .skills-versions file in the current directory. "
                     + "If no ':' is present, the skill is looked up by name in the skills registry. "
                     + "Use name@version to override the registry version.",
             paramLabel = "<skill>")
@@ -71,6 +78,13 @@ public class InstallSkillCommand implements Callable<Integer> {
             description = "Skills installation directory (overrides --global).",
             paramLabel = "<skillsDir>")
     private String skillsDir;
+
+    @Option(names = {"-u", "--update"},
+            description = "Force re-resolution of all skill versions, ignoring the lock file.")
+    private boolean update;
+
+    /** Working directory for locating .skills-versions. Package-private for testability. */
+    Path workingDirectory;
 
     public static void main(String[] args) {
         String mode = System.getProperty("jdeploy.mode", null);
@@ -92,26 +106,80 @@ public class InstallSkillCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        // 1. Parse coordinates — either Maven format or skill name from registry
+        if (coordinates != null) {
+            return installSingleSkill(coordinates);
+        } else {
+            return installFromVersionsFile();
+        }
+    }
+
+    // ---- Single-skill install (existing behavior) ----
+
+    /**
+     * Installs a single skill given a raw coordinate string.
+     * This preserves the original CLI behavior for explicit skill arguments.
+     */
+    private Integer installSingleSkill(String rawCoordinates) throws Exception {
+        SkillCoordinates coords = resolveSkillCoordinates(rawCoordinates);
+        if (coords == null) {
+            return 1;
+        }
+        return installResolved(coords.getGroupId(), coords.getArtifactId(), coords.getVersion());
+    }
+
+    /**
+     * Resolves a raw skill specifier to concrete Maven coordinates.
+     * Handles both Maven coordinate format and registry name lookup.
+     *
+     * @return resolved coordinates, or null on error (after printing error message)
+     */
+    SkillCoordinates resolveSkillCoordinates(String rawCoordinates) {
         String groupId;
         String artifactId;
         String version;
+        String name;
 
-        if (coordinates.contains(":")) {
+        if (rawCoordinates.contains(":")) {
             // Maven coordinates: groupId:artifactId[:version]
-            String[] parts = coordinates.split(":", -1);
-            if (parts.length < 2 || parts.length > 3) {
-                System.err.println("Error: Invalid coordinates format. Expected: groupId:artifactId[:version]");
-                return 1;
+            // But first check if the colon is part of a name@version pattern
+            // e.g., "com.example:my-lib@1.0" — the @ splits name from version
+            String coordinatesPart = rawCoordinates;
+            String versionOverride = null;
+            int atIdx = rawCoordinates.lastIndexOf('@');
+            if (atIdx >= 0) {
+                versionOverride = rawCoordinates.substring(atIdx + 1).trim();
+                coordinatesPart = rawCoordinates.substring(0, atIdx).trim();
+                if (versionOverride.isEmpty()) {
+                    System.err.println("Error: Version must not be empty in name@version format.");
+                    return null;
+                }
             }
-            groupId = parts[0].trim();
-            artifactId = parts[1].trim();
-            version = (parts.length == 3 && !parts[2].trim().isEmpty())
-                    ? parts[2].trim() : DEFAULT_VERSION;
+
+            if (coordinatesPart.contains(":")) {
+                // Pure Maven coordinates (possibly with @version override)
+                String[] parts = coordinatesPart.split(":", -1);
+                if (parts.length < 2 || parts.length > 3) {
+                    System.err.println("Error: Invalid coordinates format. Expected: groupId:artifactId[:version]");
+                    return null;
+                }
+                groupId = parts[0].trim();
+                artifactId = parts[1].trim();
+                if (versionOverride != null) {
+                    version = versionOverride;
+                } else if (parts.length == 3 && !parts[2].trim().isEmpty()) {
+                    version = parts[2].trim();
+                } else {
+                    version = DEFAULT_VERSION;
+                }
+                name = groupId + ":" + artifactId;
+            } else {
+                // The colon was actually inside a @version part somehow — treat as registry name
+                // This shouldn't normally happen, but handle gracefully
+                return resolveRegistryName(coordinatesPart, versionOverride);
+            }
         } else {
             // Skill name — look up in registry
-            // Support name@version syntax to override registry version
-            String skillName = coordinates.trim();
+            String skillName = rawCoordinates.trim();
             String versionOverride = null;
             int atIdx = skillName.indexOf('@');
             if (atIdx >= 0) {
@@ -119,35 +187,52 @@ public class InstallSkillCommand implements Callable<Integer> {
                 skillName = skillName.substring(0, atIdx).trim();
                 if (versionOverride.isEmpty()) {
                     System.err.println("Error: Version must not be empty in name@version format.");
-                    return 1;
+                    return null;
                 }
             }
-            if (skillName.isEmpty()) {
-                System.err.println("Error: Skill name must not be empty.");
-                return 1;
-            }
-            System.out.println("Looking up skill '" + skillName + "' in registry...");
-            String[] resolved = resolveFromRegistry(skillName);
-            if (resolved == null) {
-                System.err.println("Error: Skill '" + skillName + "' not found in the skills registry.");
-                return 1;
-            }
-            groupId = resolved[0];
-            artifactId = resolved[1];
-            if (versionOverride != null) {
-                version = versionOverride;
-            } else {
-                version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
-            }
-            System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
+            return resolveRegistryName(skillName, versionOverride);
         }
 
         if (groupId.isEmpty() || artifactId.isEmpty()) {
             System.err.println("Error: groupId and artifactId must not be empty.");
-            return 1;
+            return null;
         }
 
-        // 2. Parse repository option
+        return new SkillCoordinates(name, groupId, artifactId, version);
+    }
+
+    private SkillCoordinates resolveRegistryName(String skillName, String versionOverride) {
+        if (skillName.isEmpty()) {
+            System.err.println("Error: Skill name must not be empty.");
+            return null;
+        }
+        System.out.println("Looking up skill '" + skillName + "' in registry...");
+        String[] resolved = resolveFromRegistry(skillName);
+        if (resolved == null) {
+            System.err.println("Error: Skill '" + skillName + "' not found in the skills registry.");
+            return null;
+        }
+        String groupId = resolved[0];
+        String artifactId = resolved[1];
+        String version;
+        if (versionOverride != null) {
+            version = versionOverride;
+        } else {
+            version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+        }
+        System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
+        return new SkillCoordinates(skillName, groupId, artifactId, version);
+    }
+
+    /**
+     * Installs a single skill given resolved Maven coordinates.
+     * Creates a temp Maven project, resolves, and copies the skill to the target directory.
+     *
+     * @return 0 on success, non-zero on failure
+     */
+    private int installResolved(String groupId, String artifactId, String version)
+            throws Exception {
+        // Parse repository option
         String repoUrl = null;
         String repoUser = null;
         String repoPass = null;
@@ -158,22 +243,22 @@ public class InstallSkillCommand implements Callable<Integer> {
             repoPass = repoParts[2];
         }
 
-        // 3. Create temp directory
+        // Create temp directory
         Path tempDir = Files.createTempDirectory("install-skill-");
         System.out.println("Setting up temporary Maven project...");
 
         try {
-            // 4. Generate pom.xml in the temp project
+            // Generate pom.xml in the temp project
             generatePom(tempDir, groupId, artifactId, version, repoUrl);
 
-            // 5. Generate settings.xml if credentials are provided
+            // Generate settings.xml if credentials are provided
             boolean hasSettings = false;
             if (repoUser != null) {
                 generateSettings(tempDir, repoUser, repoPass);
                 hasSettings = true;
             }
 
-            // 6. Run embedded Maven to install skills
+            // Run embedded Maven to install skills
             System.out.println("Resolving skill " + groupId + ":" + artifactId + ":" + version + "...");
             int exitCode = runMaven(tempDir, hasSettings);
             if (exitCode != 0) {
@@ -181,7 +266,7 @@ public class InstallSkillCommand implements Callable<Integer> {
                 return exitCode;
             }
 
-            // 8. Copy installed skills to target directory
+            // Copy installed skills to target directory
             Path installedSkillsDir = tempDir.resolve(".claude").resolve("skills");
             String resolvedDir = skillsDir != null ? skillsDir
                     : global ? Paths.get(System.getProperty("user.home"), ".claude", "skills").toString()
@@ -203,6 +288,133 @@ public class InstallSkillCommand implements Callable<Integer> {
             deleteDirectory(tempDir);
         }
     }
+
+    // ---- Batch install from .skills-versions ----
+
+    /**
+     * Installs skills from a {@code .skills-versions} file in the working directory.
+     * Uses the lock file for reproducible resolution when available.
+     */
+    private Integer installFromVersionsFile() throws Exception {
+        Path cwd = getWorkingDirectory();
+        Path versionsPath = SkillVersionsFile.pathIn(cwd);
+
+        if (!SkillVersionsFile.exists(cwd)) {
+            System.err.println("Error: No <skill> argument provided and no .skills-versions file "
+                    + "found in " + cwd);
+            return 1;
+        }
+
+        // 1. Parse .skills-versions
+        List<SkillVersionsFile.Entry> entries;
+        try {
+            entries = SkillVersionsFile.parse(versionsPath);
+        } catch (IOException e) {
+            System.err.println("Error: Failed to parse .skills-versions: " + e.getMessage());
+            return 1;
+        }
+
+        if (entries.isEmpty()) {
+            System.out.println(".skills-versions is empty. Nothing to install.");
+            return 0;
+        }
+
+        System.out.println("Found " + entries.size() + " skill(s) in .skills-versions");
+
+        // 2. Read existing lock file (if any)
+        Path lockPath = SkillLockFile.pathIn(cwd);
+        Map<String, SkillLockFile.LockedSkill> locked = SkillLockFile.read(lockPath);
+
+        // 3. Compute resolution plan
+        SkillLockFile.ResolutionPlan plan;
+        if (update || locked.isEmpty()) {
+            // --update or no lock file: resolve everything fresh
+            plan = new SkillLockFile.ResolutionPlan(
+                    Collections.emptyList(), entries, Collections.emptyList());
+        } else {
+            plan = SkillLockFile.computeResolutionPlan(entries, locked);
+        }
+
+        if (!plan.getReusable().isEmpty()) {
+            System.out.println("Using locked versions for " + plan.getReusable().size() + " skill(s)");
+        }
+        if (!plan.getToResolve().isEmpty()) {
+            System.out.println("Resolving " + plan.getToResolve().size() + " skill(s)...");
+        }
+        if (!plan.getRemoved().isEmpty()) {
+            System.out.println("Removing " + plan.getRemoved().size()
+                    + " skill(s) no longer in .skills-versions");
+        }
+
+        // 4. Build final coordinates map (preserving .skills-versions order)
+        Map<String, SkillLockFile.LockedSkill> newLock = new LinkedHashMap<>();
+
+        // First, resolve all new/changed entries
+        Map<String, SkillLockFile.LockedSkill> resolvedNew = new LinkedHashMap<>();
+        for (SkillVersionsFile.Entry entry : plan.getToResolve()) {
+            String rawCoord = entry.getVersion() != null
+                    ? entry.getName() + "@" + entry.getVersion()
+                    : entry.getName();
+            SkillCoordinates coords = resolveSkillCoordinates(rawCoord);
+            if (coords == null) {
+                System.err.println("Error: Failed to resolve skill '" + entry.getName() + "'.");
+                return 1;
+            }
+            resolvedNew.put(entry.getName(), new SkillLockFile.LockedSkill(
+                    entry.getName(), coords.getGroupId(), coords.getArtifactId(),
+                    coords.getVersion(), entry.getVersion()));
+        }
+
+        // Build lock map in .skills-versions order
+        Map<String, SkillLockFile.LockedSkill> reusableMap = new LinkedHashMap<>();
+        for (SkillLockFile.LockedSkill ls : plan.getReusable()) {
+            reusableMap.put(ls.getName(), ls);
+        }
+        for (SkillVersionsFile.Entry entry : entries) {
+            SkillLockFile.LockedSkill skill = reusableMap.get(entry.getName());
+            if (skill == null) {
+                skill = resolvedNew.get(entry.getName());
+            }
+            if (skill != null) {
+                newLock.put(entry.getName(), skill);
+            }
+        }
+
+        // 5. Install each skill sequentially
+        int failCount = 0;
+        for (SkillLockFile.LockedSkill skill : newLock.values()) {
+            System.out.println("\n--- Installing " + skill.getName()
+                    + " (" + skill.getGroupId() + ":" + skill.getArtifactId()
+                    + ":" + skill.getVersion() + ") ---");
+            int result = installResolved(
+                    skill.getGroupId(), skill.getArtifactId(), skill.getVersion());
+            if (result != 0) {
+                System.err.println("Error: Failed to install skill '" + skill.getName() + "'.");
+                failCount++;
+            }
+        }
+
+        // 6. Write updated lock file
+        SkillLockFile.write(lockPath, newLock);
+        System.out.println("\nLock file updated: " + lockPath);
+
+        if (failCount > 0) {
+            System.err.println(failCount + " skill(s) failed to install.");
+            return 1;
+        }
+
+        System.out.println("All " + newLock.size() + " skill(s) installed successfully.");
+        return 0;
+    }
+
+    private Path getWorkingDirectory() {
+        if (workingDirectory != null) {
+            return workingDirectory;
+        }
+        return Path.of("").toAbsolutePath();
+    }
+
+    // ---- Registry resolution ----
 
     /**
      * Resolves a skill name to Maven coordinates via the skills registry.
@@ -247,6 +459,8 @@ public class InstallSkillCommand implements Callable<Integer> {
         return null;
     }
 
+    // ---- Repository credential parsing ----
+
     /**
      * Parses a repository string that may contain credentials.
      * Format: [user:pass@]repositoryUrl
@@ -272,6 +486,8 @@ public class InstallSkillCommand implements Callable<Integer> {
         return new String[]{repo, null, null};
     }
 
+    // ---- Maven execution ----
+
     /**
      * Runs the Maven skills-jar:install goal using the embedded Maven runtime.
      */
@@ -291,6 +507,8 @@ public class InstallSkillCommand implements Callable<Integer> {
         return cli.doMain(args.toArray(new String[0]),
                 projectDir.toString(), System.out, System.err);
     }
+
+    // ---- POM and settings generation ----
 
     /**
      * Generates a temporary pom.xml with the skill artifact as a dependency.
@@ -385,6 +603,8 @@ public class InstallSkillCommand implements Callable<Integer> {
 
         Files.writeString(projectDir.resolve("settings.xml"), settings.toString());
     }
+
+    // ---- File system utilities ----
 
     /**
      * Recursively copies a directory tree from source to target.
