@@ -6,8 +6,10 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -23,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -56,12 +59,18 @@ public class InstallSkillCommand implements Callable<Integer> {
     private static final String DEFAULT_REGISTRY_URL =
             "https://raw.githubusercontent.com/webliteca/skills-registry/main/skills.xml";
 
+    static final String GITHUB_GROUP_ID = "github";
+    private static final String DEFAULT_GITHUB_BASE_URL = "https://github.com/";
+
     @Parameters(index = "0",
             arity = "0..1",
-            description = "Skill name or Maven coordinates (groupId:artifactId[:version]). "
+            description = "Skill name, Maven coordinates (groupId:artifactId[:version]), "
+                    + "or GitHub repository (owner/repo[@version]). "
                     + "If omitted, reads from .skills-versions file in the current directory. "
-                    + "If no ':' is present, the skill is looked up by name in the skills registry. "
-                    + "Use name@version to override the registry version.",
+                    + "A '/' indicates a GitHub repository skill. "
+                    + "A ':' indicates Maven coordinates. "
+                    + "Otherwise, the skill is looked up by name in the skills registry. "
+                    + "Use @version to pin a specific version.",
             paramLabel = "<skill>")
     private String coordinates;
 
@@ -124,6 +133,9 @@ public class InstallSkillCommand implements Callable<Integer> {
         if (coords == null) {
             return 1;
         }
+        if (GITHUB_GROUP_ID.equals(coords.getGroupId())) {
+            return installFromGitHub(coords.getArtifactId(), coords.getVersion());
+        }
         return installResolved(coords.getGroupId(), coords.getArtifactId(), coords.getVersion());
     }
 
@@ -177,6 +189,9 @@ public class InstallSkillCommand implements Callable<Integer> {
                 // This shouldn't normally happen, but handle gracefully
                 return resolveRegistryName(coordinatesPart, versionOverride);
             }
+        } else if (rawCoordinates.contains("/")) {
+            // GitHub format: owner/repo[@version]
+            return resolveGitHubCoordinates(rawCoordinates);
         } else {
             // Skill name — look up in registry
             String skillName = rawCoordinates.trim();
@@ -217,11 +232,41 @@ public class InstallSkillCommand implements Callable<Integer> {
         String version;
         if (versionOverride != null) {
             version = versionOverride;
+        } else if (resolved[2] != null) {
+            version = resolved[2];
         } else {
-            version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+            version = GITHUB_GROUP_ID.equals(groupId) ? "HEAD" : DEFAULT_VERSION;
         }
         System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
         return new SkillCoordinates(skillName, groupId, artifactId, version);
+    }
+
+    /**
+     * Resolves a GitHub skill specifier to coordinates.
+     * Format: owner/repo[@version]
+     */
+    private SkillCoordinates resolveGitHubCoordinates(String rawCoordinates) {
+        String ghCoord = rawCoordinates.trim();
+        String versionOverride = null;
+        int atIdx = ghCoord.lastIndexOf('@');
+        if (atIdx >= 0) {
+            versionOverride = ghCoord.substring(atIdx + 1).trim();
+            ghCoord = ghCoord.substring(0, atIdx).trim();
+            if (versionOverride.isEmpty()) {
+                System.err.println("Error: Version must not be empty in owner/repo@version format.");
+                return null;
+            }
+        }
+        // Validate owner/repo format: exactly one slash, non-empty parts
+        int slashIdx = ghCoord.indexOf('/');
+        if (slashIdx <= 0 || slashIdx >= ghCoord.length() - 1
+                || ghCoord.indexOf('/', slashIdx + 1) >= 0) {
+            System.err.println("Error: Invalid GitHub skill format. Expected: owner/repo[@version]");
+            return null;
+        }
+        String version = versionOverride != null ? versionOverride : "HEAD";
+        System.out.println("GitHub skill: " + ghCoord + " (version: " + version + ")");
+        return new SkillCoordinates(ghCoord, GITHUB_GROUP_ID, ghCoord, version);
     }
 
     /**
@@ -268,10 +313,7 @@ public class InstallSkillCommand implements Callable<Integer> {
 
             // Copy installed skills to target directory
             Path installedSkillsDir = tempDir.resolve(".claude").resolve("skills");
-            String resolvedDir = skillsDir != null ? skillsDir
-                    : global ? Paths.get(System.getProperty("user.home"), ".claude", "skills").toString()
-                    : ".claude/skills";
-            Path targetDir = Paths.get(resolvedDir).toAbsolutePath().normalize();
+            Path targetDir = resolveTargetDir();
 
             if (!Files.exists(installedSkillsDir) || isDirectoryEmpty(installedSkillsDir)) {
                 System.err.println("Error: No skills were found after installation.");
@@ -383,11 +425,19 @@ public class InstallSkillCommand implements Callable<Integer> {
         // 5. Install each skill sequentially
         int failCount = 0;
         for (SkillLockFile.LockedSkill skill : newLock.values()) {
-            System.out.println("\n--- Installing " + skill.getName()
-                    + " (" + skill.getGroupId() + ":" + skill.getArtifactId()
-                    + ":" + skill.getVersion() + ") ---");
-            int result = installResolved(
-                    skill.getGroupId(), skill.getArtifactId(), skill.getVersion());
+            int result;
+            if (GITHUB_GROUP_ID.equals(skill.getGroupId())) {
+                System.out.println("\n--- Installing " + skill.getName()
+                        + " (github:" + skill.getArtifactId()
+                        + "@" + skill.getVersion() + ") ---");
+                result = installFromGitHub(skill.getArtifactId(), skill.getVersion());
+            } else {
+                System.out.println("\n--- Installing " + skill.getName()
+                        + " (" + skill.getGroupId() + ":" + skill.getArtifactId()
+                        + ":" + skill.getVersion() + ") ---");
+                result = installResolved(
+                        skill.getGroupId(), skill.getArtifactId(), skill.getVersion());
+            }
             if (result != 0) {
                 System.err.println("Error: Failed to install skill '" + skill.getName() + "'.");
                 failCount++;
@@ -407,6 +457,16 @@ public class InstallSkillCommand implements Callable<Integer> {
         return 0;
     }
 
+    /**
+     * Resolves the target directory for skill installation based on CLI options.
+     */
+    private Path resolveTargetDir() {
+        String resolvedDir = skillsDir != null ? skillsDir
+                : global ? Paths.get(System.getProperty("user.home"), ".claude", "skills").toString()
+                : ".claude/skills";
+        return Paths.get(resolvedDir).toAbsolutePath().normalize();
+    }
+
     private Path getWorkingDirectory() {
         if (workingDirectory != null) {
             return workingDirectory;
@@ -414,10 +474,278 @@ public class InstallSkillCommand implements Callable<Integer> {
         return Path.of("").toAbsolutePath();
     }
 
+    // ---- GitHub skill installation ----
+
+    /**
+     * Installs skills from a GitHub repository.
+     * Supports two formats:
+     * <ol>
+     *   <li>Skills directory: {@code skills/<skill-name>/SKILL.md}</li>
+     *   <li>Marketplace: {@code .claude-plugin/marketplace.json} with plugin directories</li>
+     * </ol>
+     *
+     * @param ownerRepo GitHub owner/repo identifier
+     * @param version   git ref (tag, branch) or "HEAD" for default branch
+     * @return 0 on success, non-zero on failure
+     */
+    private int installFromGitHub(String ownerRepo, String version) throws Exception {
+        String githubBaseUrl = System.getProperty("github.base.url", DEFAULT_GITHUB_BASE_URL);
+        String repoUrl = githubBaseUrl + ownerRepo;
+
+        Path tempDir = Files.createTempDirectory("install-skill-github-");
+        try {
+            Path repoDir = tempDir.resolve("repo");
+
+            // Clone the repository
+            System.out.println("Cloning repository " + ownerRepo + "...");
+            List<String> cloneCmd = new ArrayList<>();
+            cloneCmd.add("git");
+            cloneCmd.add("clone");
+            cloneCmd.add("--depth");
+            cloneCmd.add("1");
+            if (version != null && !"HEAD".equals(version)) {
+                cloneCmd.add("--branch");
+                cloneCmd.add(version);
+            }
+            cloneCmd.add(repoUrl);
+            cloneCmd.add(repoDir.toString());
+
+            ProcessBuilder pb = new ProcessBuilder(cloneCmd);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append('\n');
+                }
+            }
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                System.err.println("Error: Failed to clone repository " + ownerRepo
+                        + ":\n" + output);
+                return 1;
+            }
+
+            // Determine target directory
+            Path targetDir = resolveTargetDir();
+            Files.createDirectories(targetDir);
+
+            // Detect format and install
+            Path marketplaceJson = repoDir.resolve(".claude-plugin")
+                    .resolve("marketplace.json");
+            Path skillsDirPath = repoDir.resolve("skills");
+
+            if (Files.isRegularFile(marketplaceJson)) {
+                System.out.println("Detected marketplace format.");
+                return installGitHubMarketplace(repoDir, targetDir);
+            } else if (Files.isDirectory(skillsDirPath)) {
+                System.out.println("Detected skills directory format.");
+                return installGitHubSkillsDir(skillsDirPath, targetDir);
+            } else {
+                System.err.println("Error: Repository " + ownerRepo
+                        + " does not contain a 'skills/' directory or "
+                        + "'.claude-plugin/marketplace.json'.");
+                return 1;
+            }
+        } finally {
+            deleteDirectory(tempDir);
+        }
+    }
+
+    /**
+     * Installs skills from a repository using the skills directory format.
+     * Each subdirectory of {@code skills/} is treated as a skill.
+     */
+    private int installGitHubSkillsDir(Path skillsSrcDir, Path targetDir) throws IOException {
+        boolean installed = false;
+        try (Stream<Path> entries = Files.list(skillsSrcDir)) {
+            for (Path entry : entries.collect(Collectors.toList())) {
+                if (Files.isDirectory(entry)) {
+                    Path targetSkillDir = targetDir.resolve(entry.getFileName());
+                    Files.createDirectories(targetSkillDir);
+                    copyDirectory(entry, targetSkillDir);
+                    System.out.println("Installed skill: " + entry.getFileName());
+                    installed = true;
+                }
+            }
+        }
+        if (!installed) {
+            System.err.println("Error: No skill directories found in skills/");
+            return 1;
+        }
+        System.out.println("Skills installed successfully to " + targetDir);
+        return 0;
+    }
+
+    /**
+     * Installs skills from a repository using the Claude plugin marketplace format.
+     * Reads {@code .claude-plugin/marketplace.json} for plugin source paths, then
+     * copies skill directories from each plugin.
+     */
+    private int installGitHubMarketplace(Path repoDir, Path targetDir) throws IOException {
+        Path marketplaceFile = repoDir.resolve(".claude-plugin").resolve("marketplace.json");
+        String json = Files.readString(marketplaceFile);
+
+        List<String> pluginSources = extractMarketplacePluginSources(json);
+        if (pluginSources.isEmpty()) {
+            System.err.println("Error: No plugins found in marketplace.json");
+            return 1;
+        }
+
+        boolean installed = false;
+        for (String source : pluginSources) {
+            Path pluginDir = repoDir.resolve(source).normalize();
+            if (!pluginDir.startsWith(repoDir)) {
+                System.err.println("Warning: Skipping plugin with source outside repo: "
+                        + source);
+                continue;
+            }
+
+            // Determine skills directory — check plugin.json first, fall back to skills/
+            Path pluginSkillsDir = pluginDir.resolve("skills");
+            Path pluginJson = pluginDir.resolve(".claude-plugin").resolve("plugin.json");
+            if (Files.isRegularFile(pluginJson)) {
+                String pjContent = Files.readString(pluginJson);
+                String skillsPath = extractSimpleJsonString(pjContent, "skills");
+                if (skillsPath != null) {
+                    Path resolved = pluginDir.resolve(skillsPath).normalize();
+                    if (Files.isDirectory(resolved)) {
+                        pluginSkillsDir = resolved;
+                    }
+                }
+            }
+
+            if (Files.isDirectory(pluginSkillsDir)) {
+                try (Stream<Path> entries = Files.list(pluginSkillsDir)) {
+                    for (Path entry : entries.collect(Collectors.toList())) {
+                        if (Files.isDirectory(entry)) {
+                            Path targetSkillDir = targetDir.resolve(entry.getFileName());
+                            Files.createDirectories(targetSkillDir);
+                            copyDirectory(entry, targetSkillDir);
+                            System.out.println("Installed skill: " + entry.getFileName());
+                            installed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!installed) {
+            System.err.println("Error: No skills found in marketplace plugins.");
+            return 1;
+        }
+        System.out.println("Skills installed successfully to " + targetDir);
+        return 0;
+    }
+
+    /**
+     * Extracts "source" values from the "plugins" array in marketplace.json.
+     */
+    private List<String> extractMarketplacePluginSources(String json) {
+        List<String> sources = new ArrayList<>();
+        int pluginsIdx = json.indexOf("\"plugins\"");
+        if (pluginsIdx < 0) return sources;
+
+        int arrayStart = json.indexOf('[', pluginsIdx);
+        if (arrayStart < 0) return sources;
+
+        int arrayEnd = findClosing(json, arrayStart);
+        if (arrayEnd < 0) return sources;
+
+        String arrayContent = json.substring(arrayStart + 1, arrayEnd);
+
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf('{', pos);
+            if (objStart < 0) break;
+            int objEnd = findClosing(arrayContent, objStart);
+            if (objEnd < 0) break;
+
+            String objContent = arrayContent.substring(objStart + 1, objEnd);
+            String source = extractSimpleJsonString(objContent, "source");
+            if (source != null) {
+                sources.add(source);
+            }
+            pos = objEnd + 1;
+        }
+
+        return sources;
+    }
+
+    /**
+     * Finds the matching closing bracket or brace for an opening one.
+     * Handles nested brackets/braces and quoted strings.
+     */
+    private static int findClosing(String s, int openPos) {
+        char openChar = s.charAt(openPos);
+        char closeChar = openChar == '{' ? '}' : ']';
+        int depth = 0;
+        boolean inString = false;
+        for (int i = openPos; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inString) {
+                if (c == '\\') {
+                    i++; // skip escaped character
+                } else if (c == '"') {
+                    inString = false;
+                }
+            } else {
+                if (c == '"') {
+                    inString = true;
+                } else if (c == openChar) {
+                    depth++;
+                } else if (c == closeChar) {
+                    depth--;
+                    if (depth == 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Extracts a JSON string value for a given key from a JSON object body.
+     */
+    private static String extractSimpleJsonString(String objContent, String key) {
+        String search = "\"" + key + "\"";
+        int keyIdx = objContent.indexOf(search);
+        if (keyIdx < 0) return null;
+        int colonIdx = objContent.indexOf(':', keyIdx + search.length());
+        if (colonIdx < 0) return null;
+        int valueStart = colonIdx + 1;
+        while (valueStart < objContent.length()
+                && Character.isWhitespace(objContent.charAt(valueStart))) {
+            valueStart++;
+        }
+        if (valueStart >= objContent.length() || objContent.charAt(valueStart) != '"') {
+            return null;
+        }
+        int pos = valueStart + 1;
+        while (pos < objContent.length()) {
+            char c = objContent.charAt(pos);
+            if (c == '\\') {
+                pos += 2;
+                continue;
+            }
+            if (c == '"') {
+                return objContent.substring(valueStart + 1, pos);
+            }
+            pos++;
+        }
+        return null;
+    }
+
     // ---- Registry resolution ----
 
     /**
-     * Resolves a skill name to Maven coordinates via the skills registry.
+     * Resolves a skill name to coordinates via the skills registry.
+     *
+     * <p>Supports both Maven skills (groupId + artifactId) and GitHub skills (repository).
+     * For GitHub skills, returns {@code [GITHUB_GROUP_ID, "owner/repo", version]}.
      *
      * @param skillName the skill name to look up
      * @return array of [groupId, artifactId, version] or null if not found;
@@ -437,6 +765,11 @@ public class InstallSkillCommand implements Callable<Integer> {
                     Element skill = (Element) skills.item(i);
                     String name = getElementText(skill, "name");
                     if (skillName.equals(name)) {
+                        String repository = getElementText(skill, "repository");
+                        if (repository != null && !repository.isEmpty()) {
+                            String ver = getElementText(skill, "version");
+                            return new String[]{GITHUB_GROUP_ID, repository, ver};
+                        }
                         String gid = getElementText(skill, "groupId");
                         String aid = getElementText(skill, "artifactId");
                         String ver = getElementText(skill, "version");
