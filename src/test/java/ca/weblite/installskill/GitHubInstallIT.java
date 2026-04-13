@@ -168,6 +168,91 @@ class GitHubInstallIT {
         }
     }
 
+    // ---- Registry resolution tests ----
+
+    @Test
+    void installGitHubSkillByRegistryName() throws IOException {
+        // Create a registry XML with a GitHub skill entry
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<skills>\n"
+                    + "  <skill>\n"
+                    + "    <name>gh-test-skill</name>\n"
+                    + "    <repository>" + TEST_OWNER + "/skills-dir-repo</repository>\n"
+                    + "    <version>v1.0</version>\n"
+                    + "    <description>A GitHub skill in the registry</description>\n"
+                    + "  </skill>\n"
+                    + "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            System.setProperty("github.base.url", reposBase.toString() + "/");
+            try {
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "gh-test-skill",
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(0, exitCode,
+                        "Install GitHub skill by registry name should succeed");
+
+                Path skillDir = skillsDir.resolve("test-skill");
+                assertTrue(Files.isDirectory(skillDir),
+                        "Skill directory should exist after registry-based GitHub install");
+
+                Path skillMd = skillDir.resolve("SKILL.md");
+                assertTrue(Files.isRegularFile(skillMd),
+                        "SKILL.md should exist after registry-based GitHub install");
+            } finally {
+                System.clearProperty("skills.registry.url");
+                System.clearProperty("github.base.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
+    @Test
+    void installGitHubSkillByRegistryNameWithVersionOverride() throws IOException {
+        // Registry has no version; user overrides with @v1.0
+        Path registryFile = Files.createTempFile("skills-registry-", ".xml");
+        try {
+            String registryXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<skills>\n"
+                    + "  <skill>\n"
+                    + "    <name>gh-skill-no-ver</name>\n"
+                    + "    <repository>" + TEST_OWNER + "/skills-dir-repo</repository>\n"
+                    + "    <description>GitHub skill without version</description>\n"
+                    + "  </skill>\n"
+                    + "</skills>\n";
+            Files.writeString(registryFile, registryXml);
+
+            System.setProperty("skills.registry.url", registryFile.toUri().toString());
+            System.setProperty("github.base.url", reposBase.toString() + "/");
+            try {
+                int exitCode = new CommandLine(new InstallSkillCommand()).execute(
+                        "gh-skill-no-ver@v1.0",
+                        "-d", skillsDir.toString()
+                );
+
+                assertEquals(0, exitCode,
+                        "Install GitHub skill with version override should succeed");
+
+                Path skillDir = skillsDir.resolve("test-skill");
+                assertTrue(Files.isDirectory(skillDir),
+                        "Skill directory should exist with version override");
+            } finally {
+                System.clearProperty("skills.registry.url");
+                System.clearProperty("github.base.url");
+            }
+        } finally {
+            Files.deleteIfExists(registryFile);
+        }
+    }
+
     // ---- Batch install (.skills-versions) tests ----
 
     @Test

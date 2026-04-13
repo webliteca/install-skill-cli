@@ -232,8 +232,10 @@ public class InstallSkillCommand implements Callable<Integer> {
         String version;
         if (versionOverride != null) {
             version = versionOverride;
+        } else if (resolved[2] != null) {
+            version = resolved[2];
         } else {
-            version = resolved[2] != null ? resolved[2] : DEFAULT_VERSION;
+            version = GITHUB_GROUP_ID.equals(groupId) ? "HEAD" : DEFAULT_VERSION;
         }
         System.out.println("Resolved to " + groupId + ":" + artifactId + ":" + version);
         return new SkillCoordinates(skillName, groupId, artifactId, version);
@@ -740,7 +742,10 @@ public class InstallSkillCommand implements Callable<Integer> {
     // ---- Registry resolution ----
 
     /**
-     * Resolves a skill name to Maven coordinates via the skills registry.
+     * Resolves a skill name to coordinates via the skills registry.
+     *
+     * <p>Supports both Maven skills (groupId + artifactId) and GitHub skills (repository).
+     * For GitHub skills, returns {@code [GITHUB_GROUP_ID, "owner/repo", version]}.
      *
      * @param skillName the skill name to look up
      * @return array of [groupId, artifactId, version] or null if not found;
@@ -760,6 +765,11 @@ public class InstallSkillCommand implements Callable<Integer> {
                     Element skill = (Element) skills.item(i);
                     String name = getElementText(skill, "name");
                     if (skillName.equals(name)) {
+                        String repository = getElementText(skill, "repository");
+                        if (repository != null && !repository.isEmpty()) {
+                            String ver = getElementText(skill, "version");
+                            return new String[]{GITHUB_GROUP_ID, repository, ver};
+                        }
                         String gid = getElementText(skill, "groupId");
                         String aid = getElementText(skill, "artifactId");
                         String ver = getElementText(skill, "version");
