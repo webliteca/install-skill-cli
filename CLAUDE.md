@@ -4,7 +4,7 @@ This file provides guidance for Claude Code when working in this repository.
 
 ## Repository overview
 
-This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedded Maven) for installing AI assistant skills deployed with the skills-jar-maven-plugin. Skills are resolved from the [skills registry](https://github.com/webliteca/skills-registry) or by Maven coordinates.
+This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedded Maven) for installing AI assistant skills deployed with the skills-jar-maven-plugin. Skills are resolved from the [skills registry](https://github.com/webliteca/skills-registry), by Maven coordinates, or from GitHub repositories.
 
 ## Key files
 
@@ -26,9 +26,13 @@ This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedd
 ### Key method flow in `InstallSkillCommand`
 
 - `call()` — dispatcher: delegates to `installSingleSkill()` or `installFromVersionsFile()`
-- `resolveSkillCoordinates(String)` — parses raw input (registry name, `name@version`, or Maven coords) into `SkillCoordinates`
+- `resolveSkillCoordinates(String)` — parses raw input (registry name, `name@version`, Maven coords, or `owner/repo`) into `SkillCoordinates`
+- `resolveGitHubCoordinates(String)` — parses `owner/repo[@version]` into coordinates with `github` as groupId
 - `resolveRegistryName(String, String)` — looks up a skill name in the XML registry
-- `installResolved(String, String, String)` — creates temp Maven project and installs a single resolved skill
+- `installResolved(String, String, String)` — creates temp Maven project and installs a single resolved Maven skill
+- `installFromGitHub(String, String)` — clones a GitHub repo, detects format (skills dir or marketplace), copies skills to target
+- `installGitHubSkillsDir(Path, Path)` — copies skills from `skills/` subdirectories
+- `installGitHubMarketplace(Path, Path)` — parses `.claude-plugin/marketplace.json` and copies skills from plugins
 - `installFromVersionsFile()` — batch flow: parse versions file, compute resolution plan against lock, resolve new entries, install all, write lock
 
 ### Lock file resolution plan
@@ -38,6 +42,17 @@ This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedd
 - **To resolve**: new entry or `requestedVersion` changed — needs fresh resolution
 - **Removed**: in lock but not in `.skills-versions` — dropped from updated lock
 
+### GitHub skill installation
+
+When a skill specifier contains `/` but not `:`, it is treated as a GitHub repository reference (`owner/repo[@version]`). The CLI clones the repository and detects one of two formats:
+
+1. **Skills directory format**: The repo has a `skills/` directory at root with subdirectories for each skill (e.g., `skills/my-skill/SKILL.md`).
+2. **Marketplace format**: The repo has `.claude-plugin/marketplace.json` listing plugins, each containing a `skills/` directory with skill subdirectories.
+
+GitHub skills use `"github"` as the groupId and `"owner/repo"` as the artifactId in the lock file. The version is the git ref (tag/branch) or `"HEAD"` for the default branch.
+
+The GitHub base URL defaults to `https://github.com/` and can be overridden via `System.setProperty("github.base.url", ...)` for testing.
+
 ## `.skills-versions` format
 
 ```
@@ -45,6 +60,8 @@ This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedd
 skill-name@0.1.0
 skill-name
 com.example:my-lib@1.0
+owner/repo@v1.0
+owner/repo
 ```
 
 ## `.skills-versions.lock` format (JSON)
@@ -86,6 +103,7 @@ mvn package
 - Integration tests (`*IT.java`): install a fixture skills JAR to the local Maven repo in `@BeforeAll`, then exercise the CLI via `new CommandLine(new InstallSkillCommand()).execute(...)`.
 - For batch-mode tests, set `cmd.workingDirectory` to control where `.skills-versions` is looked up.
 - For registry tests, set `System.setProperty("skills.registry.url", ...)` to a local file URI.
+- For GitHub install tests, create local git repos as fixtures and set `System.setProperty("github.base.url", ...)` to the fixture directory.
 
 ## Distribution
 
