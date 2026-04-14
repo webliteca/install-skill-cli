@@ -262,7 +262,7 @@ class GitHubInstallIT {
             // Create .skills-versions with a GitHub skill entry
             Path versionsFile = skillsDir.resolve(".skills-versions");
             Files.writeString(versionsFile,
-                    TEST_OWNER + "/skills-dir-repo@v1.0\n");
+                    TEST_OWNER + "/skills-dir-repo v1.0\n");
 
             Path installTarget = skillsDir.resolve("output");
             Files.createDirectories(installTarget);

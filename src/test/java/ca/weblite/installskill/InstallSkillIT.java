@@ -383,7 +383,7 @@ class InstallSkillIT {
         // Create .skills-versions file in skillsDir (acting as working dir)
         Path versionsFile = skillsDir.resolve(".skills-versions");
         Files.writeString(versionsFile,
-                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+                "teavm-lambda " + TEAVM_LAMBDA_VERSION + "\n");
 
         Path registryFile = createRegistryFile();
         try {
@@ -436,7 +436,7 @@ class InstallSkillIT {
         // Create .skills-versions file
         Path versionsFile = skillsDir.resolve(".skills-versions");
         Files.writeString(versionsFile,
-                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+                "teavm-lambda " + TEAVM_LAMBDA_VERSION + "\n");
 
         Path registryFile = createRegistryFile();
         try {
@@ -486,7 +486,7 @@ class InstallSkillIT {
         // Create .skills-versions file
         Path versionsFile = skillsDir.resolve(".skills-versions");
         Files.writeString(versionsFile,
-                "teavm-lambda@" + TEAVM_LAMBDA_VERSION + "\n");
+                "teavm-lambda " + TEAVM_LAMBDA_VERSION + "\n");
 
         Path registryFile = createRegistryFile();
         try {
@@ -538,11 +538,11 @@ class InstallSkillIT {
 
     @Test
     void installFromVersionsFileUsingMavenCoordinates() throws IOException {
-        // Test .skills-versions with Maven coordinates format (groupId:artifactId@version)
+        // Test .skills-versions with Maven coordinates format (groupId:artifactId version)
         Path versionsFile = skillsDir.resolve(".skills-versions");
         Files.writeString(versionsFile,
                 TEAVM_LAMBDA_GROUP + ":" + TEAVM_LAMBDA_ARTIFACT
-                        + "@" + TEAVM_LAMBDA_VERSION + "\n");
+                        + " " + TEAVM_LAMBDA_VERSION + "\n");
 
         Path installTarget = skillsDir.resolve("output");
         Files.createDirectories(installTarget);

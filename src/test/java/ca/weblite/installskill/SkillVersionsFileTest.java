@@ -24,8 +24,8 @@ class SkillVersionsFileTest {
     @Test
     void parseBasicEntries() throws IOException {
         Path file = writeVersionsFile(
-                "my-skill@0.1.0\n" +
-                "other-skill@1.2.3\n" +
+                "my-skill 0.1.0\n" +
+                "other-skill 1.2.3\n" +
                 "third-skill\n"
         );
 
@@ -45,7 +45,7 @@ class SkillVersionsFileTest {
         Path file = writeVersionsFile(
                 "# This is a comment\n" +
                 "\n" +
-                "my-skill@0.1.0\n" +
+                "my-skill 0.1.0\n" +
                 "  \n" +
                 "# Another comment\n" +
                 "other-skill\n"
@@ -100,7 +100,7 @@ class SkillVersionsFileTest {
 
     @Test
     void parseMavenCoordinatesFormat() throws IOException {
-        Path file = writeVersionsFile("com.example:my-lib@1.0.0\n");
+        Path file = writeVersionsFile("com.example:my-lib 1.0.0\n");
 
         List<SkillVersionsFile.Entry> entries = SkillVersionsFile.parse(file);
 
@@ -111,7 +111,7 @@ class SkillVersionsFileTest {
 
     @Test
     void existsReturnsTrueWhenFilePresent() throws IOException {
-        writeVersionsFile("skill@1.0\n");
+        writeVersionsFile("skill 1.0\n");
 
         assertTrue(SkillVersionsFile.exists(tempDir));
     }
@@ -130,12 +130,60 @@ class SkillVersionsFileTest {
     @Test
     void entryToStringWithVersion() {
         SkillVersionsFile.Entry entry = new SkillVersionsFile.Entry("my-skill", "0.1.0");
-        assertEquals("my-skill@0.1.0", entry.toString());
+        assertEquals("my-skill 0.1.0", entry.toString());
     }
 
     @Test
     void entryToStringWithoutVersion() {
         SkillVersionsFile.Entry entry = new SkillVersionsFile.Entry("my-skill", null);
         assertEquals("my-skill", entry.toString());
+    }
+
+    // ---- Backward compatibility: deprecated '@' separator ----
+
+    @Test
+    void parseDeprecatedAtSeparator() throws IOException {
+        Path file = writeVersionsFile(
+                "my-skill@0.1.0\n" +
+                "other-skill@1.2.3\n"
+        );
+
+        List<SkillVersionsFile.Entry> entries = SkillVersionsFile.parse(file);
+
+        assertEquals(2, entries.size());
+        assertEquals("my-skill", entries.get(0).getName());
+        assertEquals("0.1.0", entries.get(0).getVersion());
+        assertEquals("other-skill", entries.get(1).getName());
+        assertEquals("1.2.3", entries.get(1).getVersion());
+    }
+
+    @Test
+    void parseDeprecatedAtWithMavenCoordinates() throws IOException {
+        Path file = writeVersionsFile("com.example:my-lib@1.0.0\n");
+
+        List<SkillVersionsFile.Entry> entries = SkillVersionsFile.parse(file);
+
+        assertEquals(1, entries.size());
+        assertEquals("com.example:my-lib", entries.get(0).getName());
+        assertEquals("1.0.0", entries.get(0).getVersion());
+    }
+
+    @Test
+    void parseMixedFormats() throws IOException {
+        Path file = writeVersionsFile(
+                "new-skill 2.0.0\n" +
+                "legacy-skill@1.0.0\n" +
+                "no-version-skill\n"
+        );
+
+        List<SkillVersionsFile.Entry> entries = SkillVersionsFile.parse(file);
+
+        assertEquals(3, entries.size());
+        assertEquals("new-skill", entries.get(0).getName());
+        assertEquals("2.0.0", entries.get(0).getVersion());
+        assertEquals("legacy-skill", entries.get(1).getName());
+        assertEquals("1.0.0", entries.get(1).getVersion());
+        assertEquals("no-version-skill", entries.get(2).getName());
+        assertNull(entries.get(2).getVersion());
     }
 }

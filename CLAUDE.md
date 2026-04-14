@@ -26,7 +26,7 @@ This is the **install-skill CLI** — a Java command-line tool (PicoCLI + embedd
 ### Key method flow in `InstallSkillCommand`
 
 - `call()` — dispatcher: delegates to `installSingleSkill()` or `installFromVersionsFile()`
-- `resolveSkillCoordinates(String)` — parses raw input (registry name, `name@version`, Maven coords, or `owner/repo`) into `SkillCoordinates`
+- `resolveSkillCoordinates(String)` — parses raw input (registry name, `name@version`, Maven coords, or `owner/repo[@version]`) into `SkillCoordinates`
 - `resolveGitHubCoordinates(String)` — parses `owner/repo[@version]` into coordinates with `github` as groupId
 - `resolveRegistryName(String, String)` — looks up a skill name in the XML registry
 - `installResolved(String, String, String)` — creates temp Maven project and installs a single resolved Maven skill
@@ -57,12 +57,14 @@ The GitHub base URL defaults to `https://github.com/` and can be overridden via 
 
 ```
 # Comment
-skill-name@0.1.0
+skill-name 0.1.0
 skill-name
-com.example:my-lib@1.0
-owner/repo@v1.0
+com.example:my-lib 1.0
+owner/repo v1.0
 owner/repo
 ```
+
+The legacy `@` separator (e.g., `skill-name@0.1.0`) is still accepted but deprecated.
 
 ## `.skills-versions.lock` format (JSON)
 
