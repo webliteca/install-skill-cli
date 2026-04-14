@@ -46,28 +46,29 @@ A plain text file listing skills to install, one per line:
 
 ```
 # Skills for this project
-teavm-lambda@0.1.2
-my-other-skill@0.3.1
+teavm-lambda 0.1.2
+my-other-skill 0.3.1
 some-skill
 ```
 
 Format rules:
-- One entry per line: `name@version` or just `name` (latest version)
+- One entry per line: `name version` or just `name` (latest version)
 - Names can be registry skill names or Maven coordinates (`groupId:artifactId`)
 - Lines starting with `#` are comments
 - Blank lines are ignored
+- The legacy `name@version` format is still accepted but deprecated
 
 Examples of valid entries:
 
 ```
 # Registry skill name with pinned version
-teavm-lambda@0.1.2
+teavm-lambda 0.1.2
 
 # Registry skill name, latest version
 teavm-lambda
 
 # Maven coordinates with version
-ca.weblite:teavm-lambda-parent@0.1.2
+ca.weblite:teavm-lambda-parent 0.1.2
 
 # Maven coordinates, latest version
 ca.weblite:teavm-lambda-parent

@@ -10,7 +10,8 @@ import java.util.Objects;
 /**
  * Parses {@code .skills-versions} files.
  *
- * <p>File format: one entry per line as {@code name[@version]}.
+ * <p>File format: one entry per line as {@code name version} or just {@code name}.
+ * The legacy {@code name@version} format is still accepted but deprecated.
  * Blank lines and lines starting with {@code #} are ignored.
  * Names can be registry skill names or Maven coordinates ({@code groupId:artifactId}).</p>
  */
@@ -57,7 +58,7 @@ public final class SkillVersionsFile {
 
         @Override
         public String toString() {
-            return version != null ? name + "@" + version : name;
+            return version != null ? name + " " + version : name;
         }
     }
 
@@ -80,13 +81,8 @@ public final class SkillVersionsFile {
 
             int lineNumber = i + 1;
             int atIdx = line.lastIndexOf('@');
-            if (atIdx < 0) {
-                // No version specified
-                if (line.isEmpty()) {
-                    throw new IOException("Line " + lineNumber + ": skill name must not be empty");
-                }
-                entries.add(new Entry(line, null));
-            } else {
+            if (atIdx >= 0) {
+                // Deprecated '@' separator
                 String name = line.substring(0, atIdx).trim();
                 String version = line.substring(atIdx + 1).trim();
                 if (name.isEmpty()) {
@@ -97,7 +93,31 @@ public final class SkillVersionsFile {
                             + ": version must not be empty when '@' is present (use '"
                             + name + "' without '@' for latest)");
                 }
+                System.err.println("Warning: .skills-versions line " + lineNumber
+                        + ": '@' separator is deprecated, use '" + name + " " + version
+                        + "' instead of '" + name + "@" + version + "'");
                 entries.add(new Entry(name, version));
+            } else {
+                int spaceIdx = line.indexOf(' ');
+                if (spaceIdx < 0) {
+                    // No version specified
+                    if (line.isEmpty()) {
+                        throw new IOException("Line " + lineNumber + ": skill name must not be empty");
+                    }
+                    entries.add(new Entry(line, null));
+                } else {
+                    String name = line.substring(0, spaceIdx).trim();
+                    String version = line.substring(spaceIdx + 1).trim();
+                    if (name.isEmpty()) {
+                        throw new IOException("Line " + lineNumber + ": skill name must not be empty");
+                    }
+                    if (version.isEmpty()) {
+                        throw new IOException("Line " + lineNumber
+                                + ": version must not be empty after skill name (use '"
+                                + name + "' alone for latest)");
+                    }
+                    entries.add(new Entry(name, version));
+                }
             }
         }
 
